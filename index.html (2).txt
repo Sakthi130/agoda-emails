@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Agoda Email Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Manrope', sans-serif; background: #f8fafc; color: #222; margin: 0; padding: 24px; }
+    h1 { margin-bottom: 12px; color: #09b367; text-align: center; }
+    .cards { display: flex; justify-content: center; gap: 24px; margin-top: 40px; }
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 30px 50px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.3s ease;
+      min-width: 180px;
+    }
+    .card.has-aging {
+      padding-bottom: 40px;
+    }
+    .card:hover { transform: scale(1.03); box-shadow: 0 6px 14px rgba(0,0,0,0.12); }
+    .count { font-size: 50px; font-weight: 700; color: #09b367; margin-bottom: 6px; }
+    .count.red { color: #dc2626; }
+    .label { font-size: 18px; color: #555; margin-bottom: 12px; }
+    .aging-info {
+      font-size: 12px;
+      color: #888;
+      margin-top: 12px;
+      line-height: 1.6;
+    }
+    .aging-info div {
+      margin: 4px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      background: white;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; font-size: 14px; }
+    th { background: #f1f1f1; font-weight: 600; }
+    button {
+      background: #09b367;
+      border: none;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    button:hover { background: #078c58; }
+    #backBtn {
+      margin-bottom: 16px;
+      background: #ccc;
+      color: #222;
+    }
+    #closeBtn {
+      margin-bottom: 16px;
+      background: #09b367;
+      color: white;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .status-open { background: #fef3c7; color: #92400e; }
+    .status-inprogress { background: #dbeafe; color: #1e40af; }
+    .status-closed { background: #dcfce7; color: #166534; }
+    .status-notapplicable { background: #f3f4f6; color: #374151; }
+    .top-actions {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Agoda Email Dashboard</h1>
+
+  <!-- Summary Page -->
+  <div id="summary-page">
+    <div class="cards">
+      <div class="card" onclick="showDetails('open')">
+        <div class="count red" id="openCount">0</div>
+        <div class="label">Open</div>
+      </div>
+      <div class="card has-aging" onclick="showDetails('inprogress')">
+        <div class="count" id="inprogressCount">0</div>
+        <div class="label">In-Progress</div>
+        <div class="aging-info" id="agingInfo">
+          <div>>24hrs: <span id="aging24">0</span></div>
+          <div>>48hrs: <span id="aging48">0</span></div>
+          <div>>72hrs: <span id="aging72">0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Details Page -->
+  <div id="details-page" style="display:none;">
+    <div class="top-actions">
+      <button id="backBtn" onclick="backToSummary()">← Back</button>
+      <button id="closeBtn" onclick="openCloseForm()">Close Email</button>
+    </div>
+    <div id="table-container"></div>
+  </div>
+
+  <script>
+    // Refresh every 5 minutes
+    setInterval(() => location.reload(), 5 * 60 * 1000);
+
+    const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS2WxaPZ-QWuNERYdB3egoQE1W0z7c0Wd6XE1czV2v_MmAz7NALISs15rg-Phwyl2nTYze4iv_7VcQE/pub?gid=0&single=true&output=csv";
+    const FORM_RESPONSES_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS2WxaPZ-QWuNERYdB3egoQE1W0z7c0Wd6XE1czV2v_MmAz7NALISs15rg-Phwyl2nTYze4iv_7VcQE/pub?gid=1052376066&single=true&output=csv";
+    const CLOSE_FORM_URL = "https://forms.gle/xT6xT82VpAMB1U4k8";
+
+    const EXCLUDED_REPLYTO = [
+      "GetYourGuide <do-not-reply@notification.getyourguide.com>",
+      "Viator <no-reply@m1.viator.com>"
+    ];
+
+    // Extract first name from email (dinesh.v@pickyourtrail.com → Dinesh)
+    function extractName(email) {
+      if (!email || email.trim() === "") return "-";
+      const match = email.match(/([^@]+)@/);
+      if (!match) return "-";
+      const username = match[1];
+      const firstName = username.split('.')[0];
+      return firstName.charAt(0).toUpperCase() + firstName.slice(1);
+    }
+
+    // Calculate hours difference from timestamp
+    function getHoursDiff(timestamp) {
+      if (!timestamp) return 0;
+      const emailDate = new Date(timestamp);
+      const now = new Date();
+      const diffMs = now - emailDate;
+      return diffMs / (1000 * 60 * 60); // Convert to hours
+    }
+
+    // CSV parser that handles quotes and commas
+    function parseCSV(text) {
+      const rows = [];
+      let row = [], value = '', inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i], next = text[i + 1];
+        if (char === '"' && inQuotes && next === '"') { value += '"'; i++; }
+        else if (char === '"') { inQuotes = !inQuotes; }
+        else if (char === ',' && !inQuotes) { row.push(value); value = ''; }
+        else if ((char === '\n' || char === '\r') && !inQuotes) {
+          if (value || row.length) { row.push(value); rows.push(row); row = []; value = ''; }
+        } else value += char;
+      }
+      if (value || row.length) row.push(value), rows.push(row);
+      return rows;
+    }
+
+    async function fetchCSVData(url) {
+      const res = await fetch(url);
+      const text = await res.text();
+      const rows = parseCSV(text);
+      const headers = rows[0].map(h => h.trim());
+      return rows.slice(1).map(r => Object.fromEntries(headers.map((h, i) => [h, r[i] ? r[i].trim() : ''])));
+    }
+
+    async function loadDashboard() {
+      const [emailData, formData] = await Promise.all([
+        fetchCSVData(SHEET_URL),
+        fetchCSVData(FORM_RESPONSES_URL)
+      ]);
+
+      // Create a map of msgId → {status, agent, timestamp}
+      const statusMap = {};
+      formData.forEach(r => {
+        const msgId = (r.msgID || r.msgId || "").trim();
+        const status = (r.Status || r.status || "").trim();
+        const agentEmail = (r['Email Address'] || r.agentEmail || r.email || "").trim();
+        const timestamp = (r.Timestamp || r.timestamp || "").trim();
+        
+        if (msgId !== "") {
+          statusMap[msgId] = {
+            status: status || "Closed",
+            agent: extractName(agentEmail),
+            timestamp: timestamp
+          };
+        }
+      });
+
+      // Filter rules
+      const filtered = emailData.filter(r => {
+        const replyto = (r.replyto || "").trim();
+        const msgId = (r.msgId || "").trim();
+
+        const excludedReply = EXCLUDED_REPLYTO.some(x => replyto.includes(x));
+        const isBlankReplyto = replyto === "";
+        
+        // Check if email is closed or not applicable via form responses
+        const formStatus = statusMap[msgId] ? statusMap[msgId].status.toLowerCase() : "";
+        const isClosed = formStatus === "closed" || formStatus === "not applicable";
+
+        return !excludedReply && !isClosed && !isBlankReplyto;
+      });
+
+      // Attach status info to each email
+      filtered.forEach(email => {
+        const msgId = email.msgId;
+        if (statusMap[msgId]) {
+          email.formStatus = statusMap[msgId].status;
+          email.assignedAgent = statusMap[msgId].agent;
+          email.formTimestamp = statusMap[msgId].timestamp;
+        } else {
+          email.formStatus = "Open";
+          email.assignedAgent = "-";
+          email.formTimestamp = null;
+        }
+      });
+
+      // Separate open and in-progress
+      const openEmails = filtered.filter(e => e.formStatus === "Open");
+      const inProgressEmails = filtered.filter(e => e.formStatus.toLowerCase() === "in-progress");
+
+      // Calculate aging for in-progress emails
+      let aging24 = 0, aging48 = 0, aging72 = 0;
+      inProgressEmails.forEach(email => {
+        const hours = getHoursDiff(email.formTimestamp);
+        if (hours > 72) aging72++;
+        else if (hours > 48) aging48++;
+        else if (hours > 24) aging24++;
+      });
+
+      // Update counters
+      document.getElementById("openCount").textContent = openEmails.length;
+      document.getElementById("inprogressCount").textContent = inProgressEmails.length;
+      document.getElementById("aging24").textContent = aging24;
+      document.getElementById("aging48").textContent = aging48;
+      document.getElementById("aging72").textContent = aging72;
+
+      // Store data globally
+      window.openEmails = openEmails;
+      window.inProgressEmails = inProgressEmails;
+    }
+
+    function showDetails(type) {
+      document.getElementById("summary-page").style.display = "none";
+      document.getElementById("details-page").style.display = "block";
+      
+      const dataToShow = type === 'open' ? window.openEmails : window.inProgressEmails;
+      renderTable(dataToShow || []);
+    }
+
+    function backToSummary() {
+      document.getElementById("details-page").style.display = "none";
+      document.getElementById("summary-page").style.display = "block";
+    }
+
+    function openCloseForm() {
+      window.open(CLOSE_FORM_URL, '_blank');
+    }
+
+    function renderTable(data) {
+      const container = document.getElementById("table-container");
+      if (data.length === 0) {
+        container.innerHTML = "<p>No emails in this category 🎉</p>";
+        return;
+      }
+
+      let html = "<table><tr><th>Msg ID</th><th>From</th><th>Subject</th><th>Date</th><th>Status</th><th>User</th></tr>";
+      data.forEach(d => {
+        const statusClass = d.formStatus.toLowerCase().replace(/[^a-z]/g, '');
+        html += `<tr>
+          <td>${d.msgId || '-'}</td>
+          <td>${d.from || '-'}</td>
+          <td>${d.subject || '-'}</td>
+          <td>${d.date || '-'}</td>
+          <td><span class="status-badge status-${statusClass}">${d.formStatus}</span></td>
+          <td>${d.assignedAgent}</td>
+        </tr>`;
+      });
+      html += "</table>";
+      container.innerHTML = html;
+    }
+
+    loadDashboard();
+    // Keep TV awake - multiple techniques
+    // 1. Simulate mouse movement every 2 minutes
+    setInterval(() => {
+      const moveEvent = new MouseEvent('mousemove', {
+        view: window,
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.random() * window.innerWidth,
+        clientY: Math.random() * window.innerHeight
+      });
+      document.body.dispatchEvent(moveEvent);
+    }, 2 * 60 * 1000);
+    
+    // 2. Simulate keyboard activity every 3 minutes
+    setInterval(() => {
+      const keyEvent = new KeyboardEvent('keypress', {
+        bubbles: true,
+        cancelable: true,
+        key: 'Shift'
+      });
+      document.body.dispatchEvent(keyEvent);
+    }, 3 * 60 * 1000);
+    // 3. Play silent video to keep screen active (fallback)
+    const video = document.createElement('video');
+    video.style.display = 'none';
+    video.loop = true;
+    video.muted = true;
+    video.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMQAAAAhmcmVlAAAA2m1kYXQAAAKuBgX//4ncRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTQ4IHIyNjQzIDVjNjU3MDQgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDE1IC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MSByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgzOjB4MTEzIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0xIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTMgYl9weXJhbWlkPTIgYl9hZGFwdD0xIGJfYmlhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0wIHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MSBzY2VuZWN1dD00MCBpbnRyYV9yZWZyZXNoPTAgcmNfbG9va2FoZWFkPTQwIHJjPWNyZiBtYnRyZWU9MSBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0xOjEuMDAAgAAAAAwliIQAV/0TAAYdoBAAAAMAAAMAAAMAAAMAAQAAAwAAJ2AyYQxsAAAABGWIhAAy//73v4AKVaRAAAP5YSEgAAADAAADAAADAAADAAAHgvugkks=';
+    document.body.appendChild(video);
+    video.play().catch(() => {});
+  </script>
+</body>
+</html>
